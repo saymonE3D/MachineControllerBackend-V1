@@ -384,11 +384,13 @@ cron.schedule('* * * * *', async () => {
         if (shouldStart) {
           console.log(`[SCHEDULED START] Starting machine: ${machine.name} at ${currentTime}`);
           console.log(`[SCHEDULED START] URL: ${machine.startUrl}`);
-          try {
-            const response = await axios.get(machine.startUrl);
-            console.log(`[SCHEDULED START] ✓ API call successful for ${machine.name}. Status: ${response.status}`);
-          } catch (error) {
-            console.error(`[SCHEDULED START] ✗ API call failed for ${machine.name}: ${error.message}`);
+
+          const response = await fetchWithRetry(machine.startUrl);
+
+          if (response === -1) {
+            console.error(`[SCHEDULED START] ✗ API call failed for ${machine.name}`);
+          } else {
+            console.log(`[SCHEDULED START] ✓ API call successful for ${machine.name}. Status:`, response);
           }
         }
       }
@@ -409,11 +411,12 @@ cron.schedule('* * * * *', async () => {
         if (shouldStop) {
           console.log(`[SCHEDULED STOP] Stopping machine: ${machine.name} at ${currentTime}`);
           console.log(`[SCHEDULED STOP] URL: ${machine.stopUrl}`);
-          try {
-            const response = await axios.get(machine.stopUrl);
-            console.log(`[SCHEDULED STOP] ✓ API call successful for ${machine.name}. Status: ${response.status}`);
-          } catch (error) {
-            console.error(`[SCHEDULED STOP] ✗ API call failed for ${machine.name}: ${error.message}`);
+          const response = await fetchWithRetry(machine.stopUrl);
+
+          if (response === -1) {
+            console.error(`[SCHEDULED STOP] ✗ API call failed for ${machine.name}`);
+          } else {
+            console.log(`[SCHEDULED STOP] ✓ API call successful for ${machine.name}. Status:`, response);
           }
         }
       }
@@ -422,6 +425,34 @@ cron.schedule('* * * * *', async () => {
     console.error('Schedule error:', error);
   }
 });
+
+async function fetchWithRetry(url, maxRetries = 5) {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const resp = await axios.get(url);
+      return resp.data; // success → return immediately
+    } catch (err) {
+      const status = err.response?.status;
+      const data = err.response?.data;
+
+      console.log(`Attempt ${attempt} failed:`, err.message);
+
+      // If client-side error (<500), return it immediately (don’t retry)
+      if (status && status < 500) {
+        return data || { message: err.message };
+      }
+
+      // If last attempt or status >= 500 or network error → maybe retry
+      if (attempt === maxRetries) {
+        return -1; // after all retries failed
+      }
+
+      // Optional: small delay between retries
+      await new Promise(res => setTimeout(res, 500));
+    }
+  }
+}
+
 
 // Update node status every minute using cron
 cron.schedule('* * * * *', async () => {
