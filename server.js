@@ -55,11 +55,31 @@ const nodeStatusSchema = new mongoose.Schema({
 
 const NodeStatus = mongoose.model('NodeStatus', nodeStatusSchema);
 
-// Fetch and update node status
+// Global variable to track node API status
+let nodeApiStatus = {
+  isWorking: true,
+  lastError: null,
+  lastSuccessful: new Date(),
+  consecutiveFailures: 0
+};
+
+// Fetch and update node status with error handling
 async function updateNodeStatus() {
   try {
-    const response = await axios.get('https://rpi1.eagle3dstreaming.com/api/nodes');
+    console.log('Attempting to fetch node status...');
+    const response = await axios.get('https://rpi1.eagle3dstreaming.com/api/nodes', {
+      timeout: 10000 // 10 second timeout
+    });
+    
     const nodes = response.data.nodes;
+    
+    // Reset error tracking on success
+    nodeApiStatus.isWorking = true;
+    nodeApiStatus.lastError = null;
+    nodeApiStatus.lastSuccessful = new Date();
+    nodeApiStatus.consecutiveFailures = 0;
+    
+    console.log(`Successfully fetched ${Object.keys(nodes).length} nodes`);
     
     for (const [nodeId, nodeData] of Object.entries(nodes)) {
       await NodeStatus.findOneAndUpdate(
@@ -79,26 +99,88 @@ async function updateNodeStatus() {
       );
     }
   } catch (error) {
-    console.error('Error updating node status:', error);
+    nodeApiStatus.isWorking = false;
+    nodeApiStatus.lastError = error.message;
+    nodeApiStatus.consecutiveFailures++;
+    
+    console.error('Error updating node status:', {
+      message: error.message,
+      consecutiveFailures: nodeApiStatus.consecutiveFailures,
+      lastSuccessful: nodeApiStatus.lastSuccessful
+    });
+    
+    // If it's been down for more than 5 consecutive failures, log a warning
+    if (nodeApiStatus.consecutiveFailures >= 5) {
+      console.warn('Node API has been down for 5+ consecutive attempts');
+    }
   }
 }
 
-// Get all nodes from API
+// Get all nodes from database (no more API calls)
 app.get('/api/nodes', async (req, res) => {
   try {
-    await updateNodeStatus();
+    // Get all nodes from database (cached data)
     const nodes = await NodeStatus.find();
-    res.json(nodes);
+    
+    // If no nodes in database, return empty array with status
+    if (nodes.length === 0) {
+      return res.json({
+        nodes: [],
+        apiStatus: {
+          isWorking: false,
+          message: 'No node data available in database',
+          lastError: nodeApiStatus.lastError,
+          consecutiveFailures: nodeApiStatus.consecutiveFailures
+        }
+      });
+    }
+    
+    // Return nodes with API status
+    res.json({
+      nodes: nodes,
+      apiStatus: {
+        isWorking: nodeApiStatus.isWorking,
+        message: nodeApiStatus.isWorking ? 'Node Status API is working' : 'Node Status API is not working - showing cached data',
+        lastError: nodeApiStatus.lastError,
+        lastSuccessful: nodeApiStatus.lastSuccessful,
+        consecutiveFailures: nodeApiStatus.consecutiveFailures
+      }
+    });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    console.error('Error in /api/nodes endpoint:', error);
+    
+    res.status(500).json({ 
+      error: 'Database error',
+      dbError: error.message,
+      apiStatus: nodeApiStatus
+    });
   }
 });
 
-// Get all machines
+// Get all machines with their status from database
 app.get('/api/machines', async (req, res) => {
   try {
     const machines = await Machine.find();
-    res.json(machines);
+    const nodes = await NodeStatus.find();
+    
+    // Update machine status from node data
+    const updatedMachines = machines.map(machine => {
+      const nodeStatus = nodes.find(n => n.nodeId === machine.nodeId);
+      return {
+        ...machine.toObject(),
+        status: nodeStatus ? nodeStatus.status : 'unknown'
+      };
+    });
+    
+    res.json({
+      machines: updatedMachines,
+      nodeApiStatus: {
+        isWorking: nodeApiStatus.isWorking,
+        message: nodeApiStatus.isWorking ? 'Node Status API is working' : 'Node Status API is not working',
+        lastError: nodeApiStatus.lastError,
+        consecutiveFailures: nodeApiStatus.consecutiveFailures
+      }
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -109,9 +191,15 @@ app.post('/api/machines', async (req, res) => {
   try {
     console.log('Received machine data:', req.body);
     
+    // Get machine name from database instead of API call
+    const nodeStatus = await NodeStatus.findOne({ nodeId: req.body.nodeId });
+    if (!nodeStatus) {
+      return res.status(400).json({ error: 'Node not found in database. Node data may not be updated yet.' });
+    }
+    
     // Clean up the data
     const machineData = {
-      name: req.body.name,
+      name: nodeStatus.name, // Use name from database
       nodeId: req.body.nodeId,
       startUrl: req.body.startUrl,
       stopUrl: req.body.stopUrl,
@@ -129,7 +217,7 @@ app.post('/api/machines', async (req, res) => {
         fromDate: null,
         toDate: null
       },
-      status: 'unknown'
+      status: nodeStatus.status // Set initial status from database
     };
     
     console.log('Processed machine data:', machineData);
@@ -139,7 +227,6 @@ app.post('/api/machines', async (req, res) => {
     
     console.log('Saved machine:', savedMachine);
     
-    await updateNodeStatus();
     res.json(savedMachine);
   } catch (error) {
     console.error('Error saving machine:', error);
@@ -190,9 +277,15 @@ app.put('/api/machines/:id', async (req, res) => {
     console.log('Updating machine with ID:', req.params.id);
     console.log('Update data:', req.body);
     
+    // Get machine name from database instead of API call
+    const nodeStatus = await NodeStatus.findOne({ nodeId: req.body.nodeId });
+    if (!nodeStatus) {
+      return res.status(400).json({ error: 'Node not found in database. Node data may not be updated yet.' });
+    }
+    
     // Clean up the data - only update basic machine info, not schedule
     const updateData = {
-      name: req.body.name,
+      name: nodeStatus.name, // Use name from database
       nodeId: req.body.nodeId,
       startUrl: req.body.startUrl,
       stopUrl: req.body.stopUrl,
@@ -205,7 +298,6 @@ app.put('/api/machines/:id', async (req, res) => {
       return res.status(404).json({ error: 'Machine not found' });
     }
     
-    await updateNodeStatus();
     res.json(machine);
   } catch (error) {
     console.error('Error updating machine:', error);
@@ -229,9 +321,6 @@ app.post('/api/machines/:id/start', async (req, res) => {
     const machine = await Machine.findById(req.params.id);
     if (machine && machine.startUrl) {
       await axios.get(machine.startUrl);
-      setTimeout(async () => {
-        await updateNodeStatus();
-      }, 2000);
       res.json({ success: true });
     } else {
       res.status(404).json({ error: 'Machine not found or no start URL' });
@@ -247,9 +336,6 @@ app.post('/api/machines/:id/stop', async (req, res) => {
     const machine = await Machine.findById(req.params.id);
     if (machine && machine.stopUrl) {
       await axios.get(machine.stopUrl);
-      setTimeout(async () => {
-        await updateNodeStatus();
-      }, 2000);
       res.json({ success: true });
     } else {
       res.status(404).json({ error: 'Machine not found or no stop URL' });
@@ -317,11 +403,20 @@ cron.schedule('* * * * *', async () => {
   }
 });
 
-// Update node status every 30 seconds
-setInterval(updateNodeStatus, 60000);
+// Update node status every minute using cron
+cron.schedule('* * * * *', async () => {
+  try {
+    await updateNodeStatus();
+  } catch (error) {
+    console.log('Scheduled node status update failed, will retry in 1 minute');
+  }
+});
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 7001;
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
-  updateNodeStatus(); // Initial update
+  // Initial update - don't fail startup if it fails
+  updateNodeStatus().catch(error => {
+    console.log('Initial node status update failed, but server started successfully');
+  });
 });
