@@ -336,7 +336,7 @@ app.post('/api/machines/:id/start', async (req, res) => {
       });
     } catch (error) {
       // Check if it's a 400 error (machine already running)
-      if (error.response && error.response.status === 400) {
+      if (error.response && error.response.status === 406) {
         console.log(`[START] ℹ Machine ${machine.name} is already running`);
         res.json({ 
           success: true, 
