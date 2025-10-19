@@ -319,18 +319,41 @@ app.delete('/api/machines/:id', async (req, res) => {
 app.post('/api/machines/:id/start', async (req, res) => {
   try {
     const machine = await Machine.findById(req.params.id);
-    if (machine && machine.startUrl) {
-      console.log(`[START] Calling start URL for machine: ${machine.name} (${machine.nodeId})`);
-      console.log(`[START] URL: ${machine.startUrl}`);
+    if (!machine || !machine.startUrl) {
+      return res.status(404).json({ error: 'Machine not found or no start URL' });
+    }
+
+    console.log(`[START] Calling start URL for machine: ${machine.name} (${machine.nodeId})`);
+    console.log(`[START] URL: ${machine.startUrl}`);
+    
+    try {
       const response = await axios.get(machine.startUrl);
-      console.log(`[START] ✓ API call successful for ${machine.name}. Status: ${response}`);
-      res.json({ success: true });
-    } else {
-      res.status(404).json({ error: 'Machine not found or no start URL' });
+      console.log(`[START] ✓ API call successful for ${machine.name}`);
+      res.json({ 
+        success: true, 
+        message: 'Machine started successfully',
+        alreadyRunning: false
+      });
+    } catch (error) {
+      // Check if it's a 400 error (machine already running)
+      if (error.response && error.response.status === 400) {
+        console.log(`[START] ℹ Machine ${machine.name} is already running`);
+        res.json({ 
+          success: true, 
+          message: 'Machine is already running',
+          alreadyRunning: true
+        });
+      } else {
+        // Real error - propagate it
+        throw error;
+      }
     }
   } catch (error) {
     console.error(`[START] ✗ API call failed: ${error.message}`);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ 
+      error: 'Failed to start machine',
+      details: error.message 
+    });
   }
 });
 
@@ -338,18 +361,41 @@ app.post('/api/machines/:id/start', async (req, res) => {
 app.post('/api/machines/:id/stop', async (req, res) => {
   try {
     const machine = await Machine.findById(req.params.id);
-    if (machine && machine.stopUrl) {
-      console.log(`[STOP] Calling stop URL for machine: ${machine.name} (${machine.nodeId})`);
-      console.log(`[STOP] URL: ${machine.stopUrl}`);
+    if (!machine || !machine.stopUrl) {
+      return res.status(404).json({ error: 'Machine not found or no stop URL' });
+    }
+
+    console.log(`[STOP] Calling stop URL for machine: ${machine.name} (${machine.nodeId})`);
+    console.log(`[STOP] URL: ${machine.stopUrl}`);
+    
+    try {
       const response = await axios.get(machine.stopUrl);
-      console.log(`[STOP] ✓ API call successful for ${machine.name}. Status: ${response}`);
-      res.json({ success: true });
-    } else {
-      res.status(404).json({ error: 'Machine not found or no stop URL' });
+      console.log(`[STOP] ✓ API call successful for ${machine.name}`);
+      res.json({ 
+        success: true, 
+        message: 'Machine stopped successfully',
+        alreadyStopped: false
+      });
+    } catch (error) {
+      // Check if it's a 400 error (machine already stopped)
+      if (error.response && error.response.status === 400) {
+        console.log(`[STOP] ℹ Machine ${machine.name} is already stopped`);
+        res.json({ 
+          success: true, 
+          message: 'Machine is already stopped',
+          alreadyStopped: true
+        });
+      } else {
+        // Real error - propagate it
+        throw error;
+      }
     }
   } catch (error) {
     console.error(`[STOP] ✗ API call failed: ${error.message}`);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ 
+      error: 'Failed to stop machine',
+      details: error.message 
+    });
   }
 });
 
@@ -387,10 +433,14 @@ cron.schedule('* * * * *', async () => {
 
           const response = await fetchWithRetry(machine.startUrl);
 
-          if (response === -1) {
-            console.error(`[SCHEDULED START] ✗ API call failed for ${machine.name}`);
+          if (response.success) {
+            if (response.alreadyInState) {
+              console.log(`[SCHEDULED START] ℹ Machine ${machine.name} is already running`);
+            } else {
+              console.log(`[SCHEDULED START] ✓ Successfully started ${machine.name}`);
+            }
           } else {
-            console.log(`[SCHEDULED START] ✓ API call successful for ${machine.name}. Status:`, response);
+            console.error(`[SCHEDULED START] ✗ Failed to start ${machine.name}: ${response.error}`);
           }
         }
       }
@@ -411,12 +461,17 @@ cron.schedule('* * * * *', async () => {
         if (shouldStop) {
           console.log(`[SCHEDULED STOP] Stopping machine: ${machine.name} at ${currentTime}`);
           console.log(`[SCHEDULED STOP] URL: ${machine.stopUrl}`);
+          
           const response = await fetchWithRetry(machine.stopUrl);
 
-          if (response === -1) {
-            console.error(`[SCHEDULED STOP] ✗ API call failed for ${machine.name}`);
+          if (response.success) {
+            if (response.alreadyInState) {
+              console.log(`[SCHEDULED STOP] ℹ Machine ${machine.name} is already stopped`);
+            } else {
+              console.log(`[SCHEDULED STOP] ✓ Successfully stopped ${machine.name}`);
+            }
           } else {
-            console.log(`[SCHEDULED STOP] ✓ API call successful for ${machine.name}. Status:`, response);
+            console.error(`[SCHEDULED STOP] ✗ Failed to stop ${machine.name}: ${response.error}`);
           }
         }
       }
@@ -430,24 +485,33 @@ async function fetchWithRetry(url, maxRetries = 5) {
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
       const resp = await axios.get(url);
-      return resp.data; // success → return immediately
+      return { success: true, data: resp.data };
     } catch (err) {
       const status = err.response?.status;
       const data = err.response?.data;
 
       console.log(`Attempt ${attempt} failed:`, err.message);
 
-      // If client-side error (<500), return it immediately (don’t retry)
+      // If 400 error, machine is already in desired state - treat as success
+      if (status === 400) {
+        return { 
+          success: true, 
+          alreadyInState: true,
+          message: 'Machine already in desired state' 
+        };
+      }
+
+      // If other client-side error (<500), return it immediately (don't retry)
       if (status && status < 500) {
-        return data || { message: err.message };
+        return { success: false, error: err.message, data };
       }
 
       // If last attempt or status >= 500 or network error → maybe retry
       if (attempt === maxRetries) {
-        return -1; // after all retries failed
+        return { success: false, error: 'All retry attempts failed' };
       }
 
-      // Optional: small delay between retries
+      // Small delay between retries
       await new Promise(res => setTimeout(res, 500));
     }
   }
