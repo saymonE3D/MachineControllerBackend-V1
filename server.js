@@ -320,12 +320,16 @@ app.post('/api/machines/:id/start', async (req, res) => {
   try {
     const machine = await Machine.findById(req.params.id);
     if (machine && machine.startUrl) {
-      await axios.get(machine.startUrl);
+      console.log(`[START] Calling start URL for machine: ${machine.name} (${machine.nodeId})`);
+      console.log(`[START] URL: ${machine.startUrl}`);
+      const response = await axios.get(machine.startUrl);
+      console.log(`[START] ✓ API call successful for ${machine.name}. Status: ${response}`);
       res.json({ success: true });
     } else {
       res.status(404).json({ error: 'Machine not found or no start URL' });
     }
   } catch (error) {
+    console.error(`[START] ✗ API call failed: ${error.message}`);
     res.status(500).json({ error: error.message });
   }
 });
@@ -335,12 +339,16 @@ app.post('/api/machines/:id/stop', async (req, res) => {
   try {
     const machine = await Machine.findById(req.params.id);
     if (machine && machine.stopUrl) {
-      await axios.get(machine.stopUrl);
+      console.log(`[STOP] Calling stop URL for machine: ${machine.name} (${machine.nodeId})`);
+      console.log(`[STOP] URL: ${machine.stopUrl}`);
+      const response = await axios.get(machine.stopUrl);
+      console.log(`[STOP] ✓ API call successful for ${machine.name}. Status: ${response}`);
       res.json({ success: true });
     } else {
       res.status(404).json({ error: 'Machine not found or no stop URL' });
     }
   } catch (error) {
+    console.error(`[STOP] ✗ API call failed: ${error.message}`);
     res.status(500).json({ error: error.message });
   }
 });
@@ -374,8 +382,14 @@ cron.schedule('* * * * *', async () => {
         }
         
         if (shouldStart) {
-          console.log(`Starting machine: ${machine.name} at ${currentTime}`);
-          await axios.get(machine.startUrl);
+          console.log(`[SCHEDULED START] Starting machine: ${machine.name} at ${currentTime}`);
+          console.log(`[SCHEDULED START] URL: ${machine.startUrl}`);
+          try {
+            const response = await axios.get(machine.startUrl);
+            console.log(`[SCHEDULED START] ✓ API call successful for ${machine.name}. Status: ${response.status}`);
+          } catch (error) {
+            console.error(`[SCHEDULED START] ✗ API call failed for ${machine.name}: ${error.message}`);
+          }
         }
       }
       
@@ -393,8 +407,14 @@ cron.schedule('* * * * *', async () => {
         }
         
         if (shouldStop) {
-          console.log(`Stopping machine: ${machine.name} at ${currentTime}`);
-          await axios.get(machine.stopUrl);
+          console.log(`[SCHEDULED STOP] Stopping machine: ${machine.name} at ${currentTime}`);
+          console.log(`[SCHEDULED STOP] URL: ${machine.stopUrl}`);
+          try {
+            const response = await axios.get(machine.stopUrl);
+            console.log(`[SCHEDULED STOP] ✓ API call successful for ${machine.name}. Status: ${response.status}`);
+          } catch (error) {
+            console.error(`[SCHEDULED STOP] ✗ API call failed for ${machine.name}: ${error.message}`);
+          }
         }
       }
     }
