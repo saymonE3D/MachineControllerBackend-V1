@@ -1,0 +1,15 @@
+{
+  "apps": [
+    {
+      "name": "machine-controller",
+      "script": "server.js",
+      "instances": 1,
+      "autorestart": true,
+      "watch": false,
+      "time": true,
+      "env": {
+        "PORT": 7001
+      }
+    }
+  ]
+}
