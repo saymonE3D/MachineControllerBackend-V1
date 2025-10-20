@@ -335,7 +335,7 @@ app.post('/api/machines/:id/start', async (req, res) => {
         alreadyRunning: false
       });
     } catch (error) {
-      // Check if it's a 400 error (machine already running)
+      // Check if it's a 406 error (machine already running)
       if (error.response && error.response.status === 406) {
         console.log(`[START] ℹ Machine ${machine.name} is already running`);
         res.json({ 
@@ -399,9 +399,64 @@ app.post('/api/machines/:id/stop', async (req, res) => {
   }
 });
 
-// Schedule checker - runs every minute
+
+
+async function fetchWithRetry(url, maxRetries = 5) {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const resp = await axios.get(url);
+      return { success: true, data: resp.data };
+    } catch (err) {
+      const status = err.response?.status;
+      const data = err.response?.data;
+
+      console.log(`Attempt ${attempt} failed:`, err.message);
+
+      // If 400 error, machine is already in desired state - treat as success
+      if (status === 400) {
+        return { 
+          success: true, 
+          alreadyInState: true,
+          message: 'Machine already in desired state' 
+        };
+      }
+
+      // If other client-side error (<500), return it immediately (don't retry)
+      if (status && status < 500) {
+        return { success: false, error: err.message, data };
+      }
+
+      // If last attempt or status >= 500 or network error → maybe retry
+      if (attempt === maxRetries) {
+        return { success: false, error: 'All retry attempts failed' };
+      }
+
+      // Small delay between retries
+      await new Promise(res => setTimeout(res, 500));
+    }
+  }
+}
+
+// Combined scheduler - runs every minute
+let isSchedulerRunning = false;
+
 cron.schedule('* * * * *', async () => {
+  // Prevent overlapping executions
+  if (isSchedulerRunning) {
+    console.log('[SCHEDULER] Skipping - previous execution still running');
+    return;
+  }
+  
+  isSchedulerRunning = true;
+  const startTime = Date.now();
+  
   try {
+    // 1. Update node status first
+    console.log('[SCHEDULER] Updating node status...');
+    await updateNodeStatus();
+    
+    // 2. Check and execute machine schedules
+    console.log('[SCHEDULER] Checking machine schedules...');
     const machines = await Machine.find({
       $or: [
         { 'startSchedule.enabled': true },
@@ -476,54 +531,14 @@ cron.schedule('* * * * *', async () => {
         }
       }
     }
+    
+    const duration = Date.now() - startTime;
+    console.log(`[SCHEDULER] Completed in ${duration}ms`);
+    
   } catch (error) {
-    console.error('Schedule error:', error);
-  }
-});
-
-async function fetchWithRetry(url, maxRetries = 5) {
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    try {
-      const resp = await axios.get(url);
-      return { success: true, data: resp.data };
-    } catch (err) {
-      const status = err.response?.status;
-      const data = err.response?.data;
-
-      console.log(`Attempt ${attempt} failed:`, err.message);
-
-      // If 400 error, machine is already in desired state - treat as success
-      if (status === 400) {
-        return { 
-          success: true, 
-          alreadyInState: true,
-          message: 'Machine already in desired state' 
-        };
-      }
-
-      // If other client-side error (<500), return it immediately (don't retry)
-      if (status && status < 500) {
-        return { success: false, error: err.message, data };
-      }
-
-      // If last attempt or status >= 500 or network error → maybe retry
-      if (attempt === maxRetries) {
-        return { success: false, error: 'All retry attempts failed' };
-      }
-
-      // Small delay between retries
-      await new Promise(res => setTimeout(res, 500));
-    }
-  }
-}
-
-
-// Update node status every minute using cron
-cron.schedule('* * * * *', async () => {
-  try {
-    await updateNodeStatus();
-  } catch (error) {
-    console.log('Scheduled node status update failed, will retry in 1 minute');
+    console.error('[SCHEDULER] Error:', error);
+  } finally {
+    isSchedulerRunning = false;
   }
 });
 
