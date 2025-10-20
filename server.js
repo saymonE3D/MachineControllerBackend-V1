@@ -437,14 +437,105 @@ async function fetchWithRetry(url, maxRetries = 5) {
   }
 }
 
-// Update node status every minute
+// Combined scheduler - runs every minute (Bangladesh Time)
 cron.schedule('* * * * *', async () => {
+  const startTime = Date.now();
+
   try {
-    console.log('[SCHEDULER] Updating node status...');
+    // 1. Update node status first
+    console.log(`[SCHEDULER] (${new Date().toLocaleString('en-BD', { timeZone: 'Asia/Dhaka' })}) Updating node status...`);
     await updateNodeStatus();
+
+    // 2. Check and execute machine schedules
+    console.log('[SCHEDULER] Checking machine schedules...');
+
+    const machines = await Machine.find({
+      $or: [
+        { 'startSchedule.enabled': true },
+        { 'stopSchedule.enabled': true }
+      ]
+    });
+
+    // Current time and date in Bangladesh
+    const now = new Date().toLocaleString('en-US', { timeZone: 'Asia/Dhaka' });
+    const bdNow = new Date(now);
+    const currentTime = bdNow.toTimeString().substr(0, 5); // HH:MM
+    const currentDate = bdNow.toISOString().split('T')[0]; // YYYY-MM-DD
+
+    for (const machine of machines) {
+      // Check start schedule
+      if (machine.startSchedule.enabled && machine.startSchedule.time === currentTime) {
+        const schedule = machine.startSchedule;
+        let shouldStart = false;
+
+        if (schedule.type === 'daily') {
+          shouldStart = true;
+        } else if (schedule.type === 'range') {
+          const fromDate = new Date(schedule.fromDate).toISOString().split('T')[0];
+          const toDate = new Date(schedule.toDate).toISOString().split('T')[0];
+          shouldStart = currentDate >= fromDate && currentDate <= toDate;
+        }
+
+        if (shouldStart) {
+          console.log(`[SCHEDULED START] Starting machine: ${machine.name} at ${currentTime}`);
+          console.log(`[SCHEDULED START] URL: ${machine.startUrl}`);
+
+          const response = await fetchWithRetry(machine.startUrl);
+
+          if (response.success) {
+            if (response.alreadyInState) {
+              console.log(`[SCHEDULED START] ℹ Machine ${machine.name} is already running`);
+            } else {
+              console.log(`[SCHEDULED START] ✓ Successfully started ${machine.name}`);
+            }
+          } else {
+            console.error(`[SCHEDULED START] ✗ Failed to start ${machine.name}: ${response.error}`);
+          }
+        }
+      }
+
+      // Check stop schedule
+      if (machine.stopSchedule.enabled && machine.stopSchedule.time === currentTime) {
+        const schedule = machine.stopSchedule;
+        let shouldStop = false;
+
+        if (schedule.type === 'daily') {
+          shouldStop = true;
+        } else if (schedule.type === 'range') {
+          const fromDate = new Date(schedule.fromDate).toISOString().split('T')[0];
+          const toDate = new Date(schedule.toDate).toISOString().split('T')[0];
+          shouldStop = currentDate >= fromDate && currentDate <= toDate;
+        }
+
+        if (shouldStop) {
+          console.log(`[SCHEDULED STOP] Stopping machine: ${machine.name} at ${currentTime}`);
+          console.log(`[SCHEDULED STOP] URL: ${machine.stopUrl}`);
+
+          const response = await fetchWithRetry(machine.stopUrl);
+
+          if (response.success) {
+            if (response.alreadyInState) {
+              console.log(`[SCHEDULED STOP] ℹ Machine ${machine.name} is already stopped`);
+            } else {
+              console.log(`[SCHEDULED STOP] ✓ Successfully stopped ${machine.name}`);
+            }
+          } else {
+            console.error(`[SCHEDULED STOP] ✗ Failed to stop ${machine.name}: ${response.error}`);
+          }
+        }
+      }
+    }
+
+    const duration = Date.now() - startTime;
+    console.log(`[SCHEDULER] Completed in ${duration}ms`);
+
   } catch (error) {
-    console.error('[SCHEDULER] Error updating node status:', error);
+    console.error('[SCHEDULER] Error:', error);
+  } finally {
+    isSchedulerRunning = false;
   }
+}, {
+  timezone: 'Asia/Dhaka'
 });
 const PORT = process.env.PORT || 7001;
 app.listen(PORT, () => {
