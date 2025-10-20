@@ -438,16 +438,7 @@ async function fetchWithRetry(url, maxRetries = 5) {
 }
 
 // Combined scheduler - runs every minute
-let isSchedulerRunning = false;
-
 cron.schedule('* * * * *', async () => {
-  // Prevent overlapping executions
-  if (isSchedulerRunning) {
-    console.log('[SCHEDULER] Skipping - previous execution still running');
-    return;
-  }
-  
-  isSchedulerRunning = true;
   const startTime = Date.now();
   
   try {
@@ -537,11 +528,8 @@ cron.schedule('* * * * *', async () => {
     
   } catch (error) {
     console.error('[SCHEDULER] Error:', error);
-  } finally {
-    isSchedulerRunning = false;
   }
 });
-
 const PORT = process.env.PORT || 7001;
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
